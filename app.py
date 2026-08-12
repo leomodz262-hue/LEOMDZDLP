@@ -159,43 +159,69 @@ async def start_download(url: str = Form(...), quality: str = Form(...)):
     global download_status
     download_status = {"status": "starting", "percentage": 0, "title": "", "phase": "starting"}
     
-    # Cria a pasta de downloads no servidor do Railway se ela não existir
     download_folder = os.path.join(os.getcwd(), "downloads")
     os.makedirs(download_folder, exist_ok=True)
 
+    # Configurações base padrão para burlar o bloqueio de IP do YouTube
+    base_opts = {
+        'progress_hooks': [ytdlp_hook],
+        'outtmpl': os.path.join(download_folder, '%(title)s.%(ext)s'),
+        'quiet': True,
+        'no_warnings': True,
+        # Parâmetros críticos para evitar o bloqueio em servidores (Cloud)
+        'nocheckcertificate': True,
+        'ignoreerrors': True,
+        'no_color': True,
+        'geo_bypass': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'skip': ['dash', 'hls']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Fetch-Mode': 'navigate'
+        }
+    }
+
+    # Aplica as qualidades mantendo as opções anti-bloqueio
     if quality == "bestaudio/best":
         ydl_opts = {
+            **base_opts,
             'format': 'bestaudio/best',
-            'outtmpl': os.path.join(download_folder, '%(title)s.%(ext)s'),
-            'progress_hooks': [ytdlp_hook],
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }]
         }
+    elif quality == "worst":
+        ydl_opts = {
+            **base_opts,
+            'format': 'worst',
+        }
     else:
-        if quality == "worst":
-            ydl_opts = {
-                'format': 'worst',
-                'outtmpl': os.path.join(download_folder, '%(title)s.%(ext)s'),
-                'progress_hooks': [ytdlp_hook],
-            }
-        else:
-            ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'merge_output_format': 'mp4',
-                'outtmpl': os.path.join(download_folder, '%(title)s.%(ext)s'),
-                'progress_hooks': [ytdlp_hook],
-            }
+        ydl_opts = {
+            **base_opts,
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
+        }
 
     def run():
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
+            
+            # Valida se o arquivo realmente foi criado na pasta antes de dar sucesso
+            if download_status.get("status") == "error":
+                return
+                
             download_status["status"] = "finished"
         except Exception as e:
-            print(f"Erro interno no yt-dlp: {str(e)}")
+            print(f"Erro detectado no yt-dlp: {str(e)}")
             download_status["status"] = "error"
             download_status["error"] = str(e)
 
