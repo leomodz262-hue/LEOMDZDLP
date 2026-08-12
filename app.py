@@ -7,14 +7,13 @@ import yt_dlp
 
 app = FastAPI()
 
-# A global dictionary to store the download progress of the current video
+# Dicionário global para armazenar o status do download
 download_status = {"status": "idle", "percentage": 0, "title": "", "phase": ""}
 
 def ytdlp_hook(d):
-    """Progress hook for yt-dlp with stream detection."""
+    """Gancho de progresso para o yt-dlp com detecção de fluxo."""
     global download_status
     
-    # Detect which stream is downloading (video-only or audio-only)
     info = d.get('info_dict', {})
     vcodec = info.get('vcodec', 'none')
     acodec = info.get('acodec', 'none')
@@ -48,49 +47,56 @@ def ytdlp_hook(d):
         download_status["status"] = "processing"
         download_status["percentage"] = 100
 
-# Updated HTML with modern progress bar and simple JavaScript (EventSource)
+# HTML Atualizado com Tema Escuro Moderno e elegante
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
 <head>
-    <title>yt-dlp Downloader with Progress</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LEO MDZ YT CONVERTER</title>
     <style>
-        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; background-color: #f9f9f9; }
-        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        h2 { color: #333; text-align: center; margin-bottom: 20px; }
-        input[type="text"], select { width: 100%; padding: 12px; margin: 10px 0 20px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
-        button { width: 100%; padding: 14px; background-color: #ff0000; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f0f0f; color: #f1f1f1; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .card { background: #1f1f1f; width: 100%; max-width: 500px; padding: 35px; border-radius: 16px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5); border: 1px solid #2f2f2f; }
+        h2 { color: #fff; text-align: center; margin-bottom: 25px; font-size: 24px; letter-spacing: 0.5px; }
+        label { display: block; margin-bottom: 8px; color: #aaa; font-size: 14px; font-weight: 500; }
+        input[type="text"], select { width: 100%; padding: 14px; margin-bottom: 20px; border: 1px solid #333; border-radius: 8px; background-color: #2d2d2d; color: #fff; font-size: 15px; transition: border-color 0.3s; }
+        input[type="text"]:focus, select:focus { outline: none; border-color: #ff0000; }
+        button { width: 100%; padding: 14px; background-color: #ff0000; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; transition: background 0.3s, transform 0.1s; }
         button:hover { background-color: #cc0000; }
+        button:active { transform: scale(0.98); }
+        button:disabled { background-color: #555; cursor: not-allowed; }
         
-        /* Progress Bar Styling */
-        #progress-container { display: none; margin-top: 25px; }
-        .progress-box { width: 100%; background-color: #e0e0e0; border-radius: 8px; overflow: hidden; }
-        .progress-bar { width: 0%; height: 20px; background-color: #4caf50; transition: width 0.2s ease; }
-        #status-text { text-align: center; font-weight: bold; margin-top: 8px; color: #555; }
+        /* Custom Progress Bar */
+        #progress-container { display: none; margin-top: 30px; }
+        .progress-box { width: 100%; background-color: #333; border-radius: 10px; overflow: hidden; height: 12px; }
+        .progress-bar { width: 0%; height: 100%; background-color: #ff0000; transition: width 0.3s ease, background-color 0.3s; }
+        #status-text { text-align: center; font-weight: 500; margin-top: 12px; color: #ddd; font-size: 14px; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>🎥 Local yt-dlp Manager</h2>
+        <h2>🚀 LEO MDZ YT CONVERTER</h2>
         <form id="downloadForm">
-            <label>YouTube URL:</label>
+            <label>URL do YouTube:</label>
             <input type="text" id="url" name="url" placeholder="https://www.youtube.com/watch?v=..." required>
             
-            <label>Download Options:</label>
+            <label>Opções de Download:</label>
             <select id="quality" name="quality">
-                <option value="bestvideo+bestaudio/best">Highest Quality Video (Merged)</option>
-                <option value="bestaudio/best">Audio Only (Best Quality MP3)</option>
-                <option value="worst">Lowest Quality Video (Saves Space)</option>
+                <option value="bestvideo+bestaudio/best">Vídeo na Máxima Qualidade</option>
+                <option value="bestaudio/best">Apenas Áudio (Melhor Qualidade MP3)</option>
+                <option value="worst">Vídeo em Baixa Qualidade (Economizar Espaço)</option>
             </select>
             
-            <button type="submit" id="submitBtn">Start Download</button>
+            <button type="submit" id="submitBtn">Iniciar Download</button>
         </form>
 
         <div id="progress-container">
             <div class="progress-box">
                 <div id="progressBar" class="progress-bar"></div>
             </div>
-            <div id="status-text">Starting... 0%</div>
+            <div id="status-text">Iniciando... 0%</div>
         </div>
     </div>
 
@@ -102,35 +108,38 @@ HTML_TEMPLATE = """
             document.getElementById('submitBtn').disabled = true;
             document.getElementById('progress-container').style.display = 'block';
             
-            // 1. Trigger the download backend
+            const progressBar = document.getElementById('progressBar');
+            const statusText = document.getElementById('status-text');
+            
+            progressBar.style.width = '0%';
+            progressBar.style.backgroundColor = '#ff0000';
+            statusText.innerText = 'Conectando ao servidor...';
+
             fetch('/download', { method: 'POST', body: formData });
 
-            // 2. Open an SSE connection to listen for live progress updates
             const eventSource = new EventSource('/progress-stream');
             
             eventSource.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                const progressBar = document.getElementById('progressBar');
-                const statusText = document.getElementById('status-text');
 
                 if (data.status === 'downloading') {
                     progressBar.style.width = data.percentage + '%';
-                    let label = 'Downloading';
-                    if (data.phase === 'video stream') label = 'Downloading video';
-                    else if (data.phase === 'audio stream') label = 'Downloading audio';
+                    let label = 'Baixando';
+                    if (data.phase === 'video stream') label = 'Baixando arquivo de vídeo';
+                    else if (data.phase === 'audio stream') label = 'Baixando arquivo de áudio';
                     statusText.innerText = label + ': ' + data.percentage + '%';
                 } else if (data.status === 'processing') {
                     progressBar.style.width = '100%';
                     progressBar.style.backgroundColor = '#2196f3';
-                    statusText.innerText = 'Merging audio and video... Please wait.';
+                    statusText.innerText = 'Mesclando áudio e vídeo... Por favor, aguarde.';
                 } else if (data.status === 'finished') {
                     progressBar.style.backgroundColor = '#4caf50';
-                    statusText.innerText = 'Done! Download finished.';
+                    statusText.innerText = 'Pronto! Download concluído com sucesso.';
                     eventSource.close();
                     document.getElementById('submitBtn').disabled = false;
                 } else if (data.status === 'error') {
                     progressBar.style.backgroundColor = '#f44336';
-                    statusText.innerText = 'Error: download failed.';
+                    statusText.innerText = 'Erro: Falha ao realizar o download.';
                     eventSource.close();
                     document.getElementById('submitBtn').disabled = false;
                 }
@@ -147,9 +156,8 @@ async def home():
 
 @app.post("/download")
 async def start_download(url: str = Form(...), quality: str = Form(...)):
-    """Triggers the download and correctly schedules it in the event loop."""
     global download_status
-    download_status = {"status": "starting", "percentage": 0, "title": ""}
+    download_status = {"status": "starting", "percentage": 0, "title": "", "phase": "starting"}
     
     download_folder = os.path.join(os.getcwd(), "downloads")
 
@@ -192,23 +200,21 @@ async def start_download(url: str = Form(...), quality: str = Form(...)):
         await asyncio.to_thread(run)
 
     asyncio.create_task(worker())
-    
-    return {"message": "Download initiated"}
+    return {"message": "Download iniciado"}
 
 @app.get("/progress-stream")
 async def progress_stream():
-    """Streams the current download percentage to the frontend in real-time."""
     async def event_generator():
-        global download_status
         while True:
-            yield {"data": f'{{"status": "{download_status["status"]}", "percentage": {download_status["percentage"]}, "phase": "{download_status["phase"]}"}}'}
-            if download_status["status"] == "finished":
+            # Uso do .get() com valores padrão mitiga erros do tipo KeyError
+            status_val = download_status.get("status", "idle")
+            percentage_val = download_status.get("percentage", 0)
+            phase_val = download_status.get("phase", "")
+            
+            yield {"data": f'{{"status": "{status_val}", "percentage": {percentage_val}, "phase": "{phase_val}"}}'}
+            
+            if status_val in ["finished", "error"]:
                 break
-            await asyncio.sleep(0.5) # Send updates every half-second
+            await asyncio.sleep(0.5)
 
     return EventSourceResponse(event_generator())
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main-app:app", host="0.0.0.0", port=8000, reload=True)
