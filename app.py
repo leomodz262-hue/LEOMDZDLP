@@ -1,184 +1,214 @@
-from flask import Flask, render_template, request, jsonify, send_file
-import yt_dlp
 import os
-import uuid
-import threading
-import time
-from datetime import datetime
+import asyncio
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse
+from sse_starlette.sse import EventSourceResponse
+import yt_dlp
 
-app = Flask(__name__)
+app = FastAPI()
 
-# Configuration
-DOWNLOAD_DIR = 'downloads'
-MAX_FILE_AGE = 3600  # 1 hour in seconds
+# A global dictionary to store the download progress of the current video
+download_status = {"status": "idle", "percentage": 0, "title": "", "phase": ""}
 
-# Create downloads directory
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-# Store download progress
-download_progress = {}
-
-def cleanup_old_files():
-    """Remove old downloaded files"""
-    while True:
-        try:
-            current_time = time.time()
-            for filename in os.listdir(DOWNLOAD_DIR):
-                file_path = os.path.join(DOWNLOAD_DIR, filename)
-                if os.path.isfile(file_path):
-                    if current_time - os.path.getmtime(file_path) > MAX_FILE_AGE:
-                        os.remove(file_path)
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-        time.sleep(300)  # Check every 5 minutes
-
-def progress_hook(d):
-    """Progress hook for yt-dlp"""
-    try:
-        # Get the download ID from the filename or create a unique one
-        filename = d.get('filename', '')
-        download_id = filename.split('/')[-1].split('_')[0] if filename else 'unknown'
-        
-        if d['status'] == 'downloading':
-            if 'total_bytes' in d:
-                percentage = (d['downloaded_bytes'] / d['total_bytes']) * 100
-            elif 'total_bytes_estimate' in d:
-                percentage = (d['downloaded_bytes'] / d['total_bytes_estimate']) * 100
-            else:
-                percentage = 0
-            
-            download_progress[download_id] = {
-                'percentage': round(percentage, 2),
-                'downloaded': d.get('downloaded_bytes', 0),
-                'total': d.get('total_bytes', d.get('total_bytes_estimate', 0)),
-                'speed': d.get('speed', 0),
-                'eta': d.get('eta', 0),
-                'status': 'downloading'
-            }
-        elif d['status'] == 'finished':
-            download_progress[download_id] = {
-                'percentage': 100,
-                'finished': True,
-                'filename': d['filename'],
-                'status': 'finished'
-            }
-    except Exception as e:
-        print(f"Progress hook error: {e}")
-        pass
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/download', methods=['POST'])
-def download():
-    try:
-        data = request.json
-        url = data.get('url')
-        quality = data.get('quality', 'best')
-        
-        if not url:
-            return jsonify({'error': 'No URL provided'}), 400
-        
-        # Generate unique filename
-        unique_id = str(uuid.uuid4())[:8]
-        
-        # Initialize progress tracking
-        download_progress[unique_id] = {
-            'percentage': 0,
-            'status': 'starting',
-            'finished': False
-        }
-        
-        # yt-dlp options
-        ydl_opts = {
-            'format': quality,
-            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{unique_id}_%(title)s.%(ext)s'),
-            'progress_hooks': [progress_hook],
-            'restrictfilenames': True,
-            'noplaylist': True,
-            'no_warnings': True,
-        }
-        
-        # Start download in background
-        def download_video():
-            try:
-                print(f"Starting download for {url}")
-                download_progress[unique_id]['status'] = 'downloading'
-                
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-                    
-                print(f"Download completed for {unique_id}")
-                download_progress[unique_id].update({
-                    'percentage': 100,
-                    'finished': True,
-                    'status': 'completed'
-                })
-                
-            except Exception as e:
-                print(f"Download error: {e}")
-                download_progress[unique_id] = {
-                    'error': str(e),
-                    'finished': True,
-                    'status': 'error',
-                    'percentage': 0
-                }
-        
-        thread = threading.Thread(target=download_video)
-        thread.daemon = True
-        thread.start()
-        
-        return jsonify({'success': True, 'download_id': unique_id})
-        
-    except Exception as e:
-        print(f"Route error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/progress/<download_id>')
-def get_progress(download_id):
-    try:
-        progress = download_progress.get(download_id, {
-            'percentage': 0,
-            'status': 'not_found',
-            'finished': False
-        })
-        return jsonify(progress)
-    except Exception as e:
-        print(f"Progress error: {e}")
-        return jsonify({'error': str(e), 'percentage': 0, 'finished': False}), 500
-
-@app.route('/files')
-def list_files():
-    files = []
-    try:
-        for filename in os.listdir(DOWNLOAD_DIR):
-            file_path = os.path.join(DOWNLOAD_DIR, filename)
-            if os.path.isfile(file_path):
-                files.append({
-                    'name': filename,
-                    'size': os.path.getsize(file_path),
-                    'modified': datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
-                })
-    except Exception as e:
-        print(f"Error listing files: {e}")
-    return jsonify(files)
-
-@app.route('/download_file/<filename>')
-def download_file(filename):
-    try:
-        file_path = os.path.join(DOWNLOAD_DIR, filename)
-        if os.path.exists(file_path):
-            return send_file(file_path, as_attachment=True)
-        else:
-            return jsonify({'error': 'File not found'}), 404
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-if __name__ == '__main__':
-    # Start cleanup thread
-    cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
-    cleanup_thread.start()
+def ytdlp_hook(d):
+    """Progress hook for yt-dlp with stream detection."""
+    global download_status
     
-    port = int(os.environ.get('PORT', 5000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    # Detect which stream is downloading (video-only or audio-only)
+    info = d.get('info_dict', {})
+    vcodec = info.get('vcodec', 'none')
+    acodec = info.get('acodec', 'none')
+    has_video = vcodec and vcodec != 'none'
+    has_audio = acodec and acodec != 'none'
+    
+    if has_video and not has_audio:
+        download_status["phase"] = "video stream"
+    elif has_audio and not has_video:
+        download_status["phase"] = "audio stream"
+    
+    if d['status'] == 'downloading':
+        download_status["status"] = "downloading"
+        
+        if '_percent_str' in d:
+            pct_str = d['_percent_str'].replace('%', '').strip()
+            try:
+                download_status["percentage"] = float(pct_str)
+                return
+            except ValueError:
+                pass
+                
+        total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
+        downloaded_bytes = d.get('downloaded_bytes', 0)
+        
+        if total_bytes and total_bytes > 0:
+            percentage = (downloaded_bytes / total_bytes) * 100
+            download_status["percentage"] = round(percentage, 1)
+
+    elif d['status'] == 'finished':
+        download_status["status"] = "processing"
+        download_status["percentage"] = 100
+
+# Updated HTML with modern progress bar and simple JavaScript (EventSource)
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>yt-dlp Downloader with Progress</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; background-color: #f9f9f9; }
+        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h2 { color: #333; text-align: center; margin-bottom: 20px; }
+        input[type="text"], select { width: 100%; padding: 12px; margin: 10px 0 20px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+        button { width: 100%; padding: 14px; background-color: #ff0000; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; }
+        button:hover { background-color: #cc0000; }
+        
+        /* Progress Bar Styling */
+        #progress-container { display: none; margin-top: 25px; }
+        .progress-box { width: 100%; background-color: #e0e0e0; border-radius: 8px; overflow: hidden; }
+        .progress-bar { width: 0%; height: 20px; background-color: #4caf50; transition: width 0.2s ease; }
+        #status-text { text-align: center; font-weight: bold; margin-top: 8px; color: #555; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🎥 Local yt-dlp Manager</h2>
+        <form id="downloadForm">
+            <label>YouTube URL:</label>
+            <input type="text" id="url" name="url" placeholder="https://www.youtube.com/watch?v=..." required>
+            
+            <label>Download Options:</label>
+            <select id="quality" name="quality">
+                <option value="bestvideo+bestaudio/best">Highest Quality Video (Merged)</option>
+                <option value="bestaudio/best">Audio Only (Best Quality MP3)</option>
+                <option value="worst">Lowest Quality Video (Saves Space)</option>
+            </select>
+            
+            <button type="submit" id="submitBtn">Start Download</button>
+        </form>
+
+        <div id="progress-container">
+            <div class="progress-box">
+                <div id="progressBar" class="progress-bar"></div>
+            </div>
+            <div id="status-text">Starting... 0%</div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('downloadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('progress-container').style.display = 'block';
+            
+            // 1. Trigger the download backend
+            fetch('/download', { method: 'POST', body: formData });
+
+            // 2. Open an SSE connection to listen for live progress updates
+            const eventSource = new EventSource('/progress-stream');
+            
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                const progressBar = document.getElementById('progressBar');
+                const statusText = document.getElementById('status-text');
+
+                if (data.status === 'downloading') {
+                    progressBar.style.width = data.percentage + '%';
+                    let label = 'Downloading';
+                    if (data.phase === 'video stream') label = 'Downloading video';
+                    else if (data.phase === 'audio stream') label = 'Downloading audio';
+                    statusText.innerText = label + ': ' + data.percentage + '%';
+                } else if (data.status === 'processing') {
+                    progressBar.style.width = '100%';
+                    progressBar.style.backgroundColor = '#2196f3';
+                    statusText.innerText = 'Merging audio and video... Please wait.';
+                } else if (data.status === 'finished') {
+                    progressBar.style.backgroundColor = '#4caf50';
+                    statusText.innerText = 'Done! Download finished.';
+                    eventSource.close();
+                    document.getElementById('submitBtn').disabled = false;
+                } else if (data.status === 'error') {
+                    progressBar.style.backgroundColor = '#f44336';
+                    statusText.innerText = 'Error: download failed.';
+                    eventSource.close();
+                    document.getElementById('submitBtn').disabled = false;
+                }
+            };
+        });
+    </script>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return HTML_TEMPLATE
+
+@app.post("/download")
+async def start_download(url: str = Form(...), quality: str = Form(...)):
+    """Triggers the download and correctly schedules it in the event loop."""
+    global download_status
+    download_status = {"status": "starting", "percentage": 0, "title": ""}
+    
+    download_folder = os.path.join(os.getcwd(), "downloads")
+
+    if quality == "bestaudio/best":
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(download_folder, '%(title)s.%(ext)s'),
+            'progress_hooks': [ytdlp_hook],
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        }
+    else:
+        if quality == "worst":
+            ydl_opts = {
+                'format': 'worst',
+                'outtmpl': os.path.join(download_folder, '%(title)s.%(ext)s'),
+                'progress_hooks': [ytdlp_hook],
+            }
+        else:
+            ydl_opts = {
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'merge_output_format': 'mp4',
+                'outtmpl': os.path.join(download_folder, '%(title)s.%(ext)s'),
+                'progress_hooks': [ytdlp_hook],
+            }
+
+    def run():
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            download_status["status"] = "finished"
+        except Exception as e:
+            download_status["status"] = "error"
+            download_status["error"] = str(e)
+
+    async def worker():
+        await asyncio.to_thread(run)
+
+    asyncio.create_task(worker())
+    
+    return {"message": "Download initiated"}
+
+@app.get("/progress-stream")
+async def progress_stream():
+    """Streams the current download percentage to the frontend in real-time."""
+    async def event_generator():
+        global download_status
+        while True:
+            yield {"data": f'{{"status": "{download_status["status"]}", "percentage": {download_status["percentage"]}, "phase": "{download_status["phase"]}"}}'}
+            if download_status["status"] == "finished":
+                break
+            await asyncio.sleep(0.5) # Send updates every half-second
+
+    return EventSourceResponse(event_generator())
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main-app:app", host="0.0.0.0", port=8000, reload=True)
