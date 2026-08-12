@@ -159,7 +159,9 @@ async def start_download(url: str = Form(...), quality: str = Form(...)):
     global download_status
     download_status = {"status": "starting", "percentage": 0, "title": "", "phase": "starting"}
     
+    # Cria a pasta de downloads no servidor do Railway se ela não existir
     download_folder = os.path.join(os.getcwd(), "downloads")
+    os.makedirs(download_folder, exist_ok=True)
 
     if quality == "bestaudio/best":
         ydl_opts = {
@@ -193,6 +195,7 @@ async def start_download(url: str = Form(...), quality: str = Form(...)):
                 ydl.download([url])
             download_status["status"] = "finished"
         except Exception as e:
+            print(f"Erro interno no yt-dlp: {str(e)}")
             download_status["status"] = "error"
             download_status["error"] = str(e)
 
@@ -206,7 +209,7 @@ async def start_download(url: str = Form(...), quality: str = Form(...)):
 async def progress_stream():
     async def event_generator():
         while True:
-            # Uso do .get() com valores padrão mitiga erros do tipo KeyError
+            # Uso seguro de .get() para mitigar erros do tipo KeyError
             status_val = download_status.get("status", "idle")
             percentage_val = download_status.get("percentage", 0)
             phase_val = download_status.get("phase", "")
